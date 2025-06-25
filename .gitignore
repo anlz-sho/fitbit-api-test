@@ -6,6 +6,7 @@
 
 # 環境ファイル
 .env
+*.json
 
 # Python キャッシュ
 __pycache__/
