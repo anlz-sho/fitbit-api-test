@@ -6,9 +6,9 @@ import base64
 
 # .env を読み込む
 load_dotenv()
-CLIENT_ID = os.getenv("YOUR_CLIENT_ID")
-CLIENT_SECRET = os.getenv("YOUR_CLIENT_SECRET")
-REFRESH_TOKEN = os.getenv("YOUR_REFRESH_TOKEN")
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+#REFRESH_TOKEN = os.getenv("YOUR_REFRESH_TOKEN")
 
 # トークンエンドポイント
 TOKEN_URL = "https://api.fitbit.com/oauth2/token"
@@ -22,8 +22,18 @@ def get_basic_auth_header(client_id, client_secret):
     auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
     return f"Basic {auth_base64}"
 
+def load_tokens():
+    if os.path.exists("tokens.json"):
+        with open("tokens.json", "r") as f:
+            tokens = json.load(f)
+        return tokens.get("access_token"), tokens.get("refresh_token")
+    return None, None
 
-def refresh_access_token():
+def save_tokens(tokens):
+    with open("tokens.json", "w") as f:
+        json.dump(tokens, f, indent=2)
+
+def refresh_access_token(refresh_token):
     """
     リフレッシュトークンを使って新しいアクセストークンを取得
     """
@@ -34,7 +44,7 @@ def refresh_access_token():
 
     data = {
         "grant_type": "refresh_token",
-        "refresh_token": REFRESH_TOKEN
+        "refresh_token": refresh_token
     }
 
     response = requests.post(TOKEN_URL, headers=headers, data=data)
@@ -54,20 +64,32 @@ def refresh_access_token():
         print(response.text)
         return None, None
 
-# 実行
-access_token, new_refresh_token = refresh_access_token()
-
-# 取得したアクセストークンでAPI呼び出し例
-if access_token:
+def call_api(access_token):
     api_url = "https://api.fitbit.com/1.2/user/-/sleep/date/2025-06-22.json"
-    api_headers = {
+    headers = {
         "Authorization": f"Bearer {access_token}"
     }
-    api_response = requests.get(api_url, headers=api_headers)
 
-    if api_response.status_code == 200:
-        print("✅ API 呼び出し成功")
-        print(json.dumps(api_response.json(), indent=2))
+    response = requests.get(api_url, headers=headers)
+    if response.status_code == 200:
+        print("✅ API 呼び出し成功:")
+        print(json.dumps(response.json(), indent=2))
+    elif response.status_code == 401:
+        print("🔁 トークンが期限切れ。リフレッシュします。")
+        return False
     else:
-        print(f"❌ API 呼び出しエラー: {api_response.status_code}")
-        print(api_response.text)
+        print(f"❌ API 呼び出しエラー: {response.status_code}")
+        print(response.text)
+    return True
+
+# ================== 実行部分 ==================
+access_token, refresh_token = load_tokens()
+
+# APIコール
+success = call_api(access_token)
+
+# トークン期限切れならリフレッシュして再試行
+if not success:
+    access_token, refresh_token = refresh_access_token(refresh_token)
+    if access_token:
+        call_api(access_token)
