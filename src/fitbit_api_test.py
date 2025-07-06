@@ -75,7 +75,7 @@ def call_api(access_token):
     """
     Fitbit APIの呼び出しを行う
     """
-    api_url = "https://api.fitbit.com/1.2/user/-/sleep/date/2025-06-22/2025-06-28.json"
+    api_url = "https://api.fitbit.com/1.2/user/-/sleep/date/2025-07-02/2025-07-05.json"
     headers = {
         "Authorization": f"Bearer {access_token}"
     }
@@ -92,6 +92,24 @@ def call_api(access_token):
         print(response.text)
         return None
 
+def is_duplicate_log(client, table_id, sleep_log_id):
+    """
+    sleep_log_idを重複チェックする
+    """
+    query = f"""
+    SELECT COUNT(*) as count
+    FROM `{table_id}`
+    WHERE sleep_log_id = @log_id
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("log_id", "INT64", sleep_log_id)
+        ]
+    )
+    query_job = client.query(query, job_config=job_config)
+    results = query_job.result()
+    return next(results).count > 0
+
 def write_to_bigquery(bq_table,sleep_json):
     """
     bigqueryにデータの書き込みを行う
@@ -99,36 +117,44 @@ def write_to_bigquery(bq_table,sleep_json):
     client = bigquery.Client()
     table_id = bq_table
 
-    # 取り出すデータ構造の簡略化（複雑なネストを回避）
-    if "sleep" not in sleep_json or not sleep_json["sleep"]:
-        print("❌ データがありません")
-        return
-
-    record = sleep_json["sleep"][0]
-    row = {
-        "sleep_log_id": record.get("logId"),
-        "date": record.get("dateOfSleep"),
-        "startTime": record.get("startTime"),
-        "endTime": record.get("endTime"),
-        "minutesAsleep": record.get("minutesAsleep"),
-        "minutesAwake": record.get("minutesAwake"),
-        "timeInBed": record.get("timeInBed"),
-        "efficiency": record.get("efficiency"),
-        "type": record.get("type"),
-        "created_at": datetime.utcnow().isoformat()
-    }
-
     job_config = bigquery.LoadJobConfig(
         autodetect=True,  # スキーマを自動判別
         write_disposition="WRITE_APPEND",  # 追記（初回は新規作成）
     )
 
-    # リスト形式で渡す必要あり
-    job = client.load_table_from_json([row], table_id, job_config=job_config)
-    job.result()  # ジョブの完了を待機
+    inserted_count = 0
+    skipped_count = 0
+
+    if "sleep" not in sleep_json or not sleep_json["sleep"]:
+        print("❌ データがありません")
+        return
+
+    rows = []
+    for record in sleep_json["sleep"]:
+        sleep_log_id = record.get("logId")
+        if not is_duplicate_log(client, table_id, sleep_log_id):
+            row = {
+                "sleep_log_id": record.get("logId"),
+                "date": record.get("dateOfSleep"),
+                "startTime": record.get("startTime"),
+                "endTime": record.get("endTime"),
+                "minutesAsleep": record.get("minutesAsleep"),
+                "minutesAwake": record.get("minutesAwake"),
+                "timeInBed": record.get("timeInBed"),
+                "efficiency": record.get("efficiency"),
+                "type": record.get("type"),
+                "is_main_sleep": record.get("isMainSleep"),
+                "created_at": datetime.utcnow().isoformat()
+            }
+
+            job = client.load_table_from_json([row], table_id, job_config=job_config)
+            job.result()
+            inserted_count += 1
+        else:
+            skipped_count += 1
 
     print("✅ BigQuery に書き込み完了")
-
+    print(f"✅ BigQuery 書き込み完了: 追加 {inserted_count} 件 / スキップ {skipped_count} 件")
 
 # ================== 実行部分 ==================
 access_token, refresh_token = load_tokens()
