@@ -5,6 +5,7 @@ import base64
 from dotenv import load_dotenv
 from google.cloud import bigquery
 from datetime import datetime
+from dateutil import parser
 
 # .env を読み込む
 load_dotenv()
@@ -75,7 +76,7 @@ def call_api(access_token):
     """
     Fitbit APIの呼び出しを行う
     """
-    api_url = "https://api.fitbit.com/1.2/user/-/sleep/date/2025-07-02/2025-07-05.json"
+    api_url = "https://api.fitbit.com/1.2/user/-/sleep/date/2025-07-02/2025-07-20.json"
     headers = {
         "Authorization": f"Bearer {access_token}"
     }
@@ -119,6 +120,25 @@ def write_to_bigquery(bq_table,sleep_json):
 
     job_config = bigquery.LoadJobConfig(
         autodetect=True,  # スキーマを自動判別
+        schema=[
+            bigquery.SchemaField("sleep_log_id", "INTEGER"),
+            bigquery.SchemaField("date", "DATE"),
+            bigquery.SchemaField("weekday", "STRING"),
+            bigquery.SchemaField("startTime", "TIMESTAMP"),
+            bigquery.SchemaField("endTime", "TIMESTAMP"),
+            bigquery.SchemaField("minutesAsleep", "INTEGER"),
+            bigquery.SchemaField("minutesAwake", "INTEGER"),
+            bigquery.SchemaField("deep_minutes", "INTEGER"),
+            bigquery.SchemaField("deep_sleep_ratio", "FLOAT"),
+            bigquery.SchemaField("wake_count", "INTEGER"),
+            bigquery.SchemaField("sleep_latency", "FLOAT"),
+            bigquery.SchemaField("sleep_score", "INTEGER"),
+            bigquery.SchemaField("timeInBed", "INTEGER"),
+            bigquery.SchemaField("efficiency", "INTEGER"),
+            bigquery.SchemaField("type", "STRING"),
+            bigquery.SchemaField("is_main_sleep", "BOOLEAN"),
+            bigquery.SchemaField("created_at", "TIMESTAMP"),
+        ],
         write_disposition="WRITE_APPEND",  # 追記（初回は新規作成）
     )
 
@@ -133,19 +153,57 @@ def write_to_bigquery(bq_table,sleep_json):
     for record in sleep_json["sleep"]:
         sleep_log_id = record.get("logId")
         if not is_duplicate_log(client, table_id, sleep_log_id):
+
+            # 入眠潜時を計算
+            start_dt = parser.parse(record["startTime"])
+
+            sleep_stage_entries = [
+                e for e in record.get("levels", {}).get("data", [])
+                if e["level"] in ["asleep", "light", "deep", "rem"]
+            ]
+
+            if sleep_stage_entries:
+                first_stage_dt = parser.parse(sleep_stage_entries[0]["dateTime"])
+                start_dt = parser.parse(record["startTime"])
+                sleep_latency = (first_stage_dt - start_dt).total_seconds() / 60
+            else:
+                sleep_latency = None
+            print(sleep_latency)
+
+            # 深い睡眠時間と割合
+            minutes_asleep = record.get("minutesAsleep", 0)
+            deep_minutes = record.get("levels", {}).get("summary", {}).get("deep", {}).get("minutes", 0)
+            deep_sleep_ratio = (deep_minutes / minutes_asleep * 100) if minutes_asleep else None
+
+            # 起床回数
+            wake_count = record.get("levels", {}).get("summary", {}).get("wake", {}).get("count")
+
+            # 曜日
+            date_str = record.get("dateOfSleep")  # "2025-07-02" 形式
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+            weekday = date_obj.strftime("%A")  # "Monday"
+
             row = {
                 "sleep_log_id": record.get("logId"),
-                "date": record.get("dateOfSleep"),
-                "startTime": record.get("startTime"),
-                "endTime": record.get("endTime"),
-                "minutesAsleep": record.get("minutesAsleep"),
-                "minutesAwake": record.get("minutesAwake"),
-                "timeInBed": record.get("timeInBed"),
-                "efficiency": record.get("efficiency"),
-                "type": record.get("type"),
-                "is_main_sleep": record.get("isMainSleep"),
-                "created_at": datetime.utcnow().isoformat()
+                "date": record.get("dateOfSleep"),              # 睡眠記録日
+                "weekday": weekday,                             # 曜日
+                "startTime": record.get("startTime"),           # 睡眠の開始時刻
+                "endTime": record.get("endTime"),               # 睡眠の終了時刻
+                "minutesAsleep": record.get("minutesAsleep"),   # 実際に眠っていた時間
+                "minutesAwake": record.get("minutesAwake"),     # ベッドにいたが寝ていなかった時間
+                "deep_minutes": deep_minutes,                   # 深い睡眠の合計
+                "deep_sleep_ratio": deep_sleep_ratio,           # 深い睡眠の割合
+                "wake_count": wake_count,                       # 中途覚醒の回数
+                "sleep_latency": sleep_latency,                 # 入床から入眠までの時間
+                "sleep_score": record.get("score"),             # Fitbitの睡眠スコア
+                "timeInBed": record.get("timeInBed"),           # ベッドにいた総時間
+                "efficiency": record.get("efficiency"),         # 睡眠効率(minutesAsleep/timeInBed)
+                "type": record.get("type"),                     # 睡眠ステージ
+                "is_main_sleep": record.get("isMainSleep"),     # 本睡眠フラグ
+                "created_at": datetime.now().isoformat()
             }
+
+            print(row)
 
             job = client.load_table_from_json([row], table_id, job_config=job_config)
             job.result()
