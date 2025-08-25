@@ -60,7 +60,7 @@ def refresh_access_token(refresh_token):
     if response.status_code == 200:
         tokens = response.json()
         print("✅ 新しいトークンを取得しました:")
-        print(json.dumps(tokens, indent=2))
+        #print(json.dumps(tokens, indent=2))
 
         # 必要に応じてファイル保存など
         with open("tokens.json", "w") as f:
